@@ -1,0 +1,26 @@
+TEST PRISM EXTENSION
+
+1. Reload the extension in chrome://extensions
+
+2. Open a REGULAR webpage (like news.com or any article page)
+   DO NOT test on chrome:// pages (extensions won't load there)
+
+3. Open DevTools on the webpage (F12 or Cmd+Option+I)
+
+4. Click the Prism icon in Chrome toolbar
+
+5. In the popup, click "Analyze Page"
+
+6. Check TWO places for console logs:
+   a) Page DevTools Console (the one you opened with F12)
+   b) Extension DevTools Console 
+      - Go to chrome://extensions
+      - Click "service worker" or "inspect views" for Prism
+      - Check that console for popup.js logs
+
+What you should see:
+- In page console: "Prism: Content script loaded on: [url]"
+- In page console: "Prism: Received message: ..."
+- In popup console: "Prism Popup: Sending message..."
+
+If you DON'T see "Prism: Content script loaded", the content script isn't running.
