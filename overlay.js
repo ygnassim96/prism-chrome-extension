@@ -3,10 +3,16 @@
 (function() {
   'use strict';
 
+  // Prevent duplicate initialization if script is injected multiple times
+  if (window.prismOverlayInitialized) {
+    console.log('Prism overlay already initialized, skipping...');
+    return;
+  }
+  window.prismOverlayInitialized = true;
+
   let overlay = null;
   let isVisible = false;
-  let currentView = 'saved'; // 'saved', 'groups', or 'insights'
-  let cachedGroups = null; // Cache for groups to avoid regeneration
+  let currentView = 'saved'; // 'saved' or 'insights'
 
   // Listen for messages to show/hide the overlay
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -86,20 +92,13 @@
     savedBtn.style.cssText = 'flex: 1; padding: 8px 12px; border: none; border-radius: 16px; background: white; cursor: pointer; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 13px; font-weight: 600; color: #333; box-shadow: 0 1px 2px rgba(0,0,0,0.1); transition: all 0.2s;';
     savedBtn.addEventListener('click', () => switchView('saved'));
     
-    const groupsBtn = document.createElement('button');
-    groupsBtn.textContent = 'Groups';
-    groupsBtn.className = 'toggle-btn groups';
-    groupsBtn.style.cssText = 'flex: 1; padding: 8px 12px; border: none; border-radius: 16px; background: transparent; cursor: pointer; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 13px; font-weight: 500; color: #666; transition: all 0.2s;';
-    groupsBtn.addEventListener('click', () => switchView('groups'));
-    
     const insightsBtn = document.createElement('button');
     insightsBtn.textContent = 'Insights';
     insightsBtn.className = 'toggle-btn insights';
     insightsBtn.style.cssText = 'flex: 1; padding: 8px 12px; border: none; border-radius: 16px; background: transparent; cursor: pointer; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 13px; font-weight: 500; color: #666; transition: all 0.2s;';
     insightsBtn.addEventListener('click', () => switchView('insights'));
-    
+
     toggleWrapper.appendChild(savedBtn);
-    toggleWrapper.appendChild(groupsBtn);
     toggleWrapper.appendChild(insightsBtn);
     
     titleRow.appendChild(title);
@@ -142,10 +141,6 @@
             refreshBtn.addEventListener('click', () => {
               if (currentView === 'saved') {
                 loadHighlights();
-              } else if (currentView === 'groups') {
-                cachedGroups = null; // Clear cache to force regeneration
-                chrome.storage.local.remove('cachedGroups'); // Also remove from storage
-                loadGroups(true); // Force regeneration
               } else if (currentView === 'insights') {
                 loadInsights();
               }
@@ -157,8 +152,21 @@
     document.body.appendChild(overlay);
 
             isVisible = true;
-            loadCachedGroups();
             loadHighlights();
+            
+            // Check for unanalyzed items and analyze them
+            chrome.storage.local.get('highlights', async (result) => {
+              const highlights = result.highlights || [];
+              const unanalyzedItems = highlights.filter(h => {
+                const type = h.type || (h.text ? 'text' : (h.webpageUrl ? 'webpage' : null));
+                return (type === 'text' || type === 'webpage') && h.analyzed !== true;
+              });
+              
+              // Analyze unanalyzed items
+              for (const item of unanalyzedItems) {
+                await processNewItemForInsights(item);
+              }
+            });
           }
 
   function hideOverlay() {
@@ -220,73 +228,26 @@
           position: relative;
         `;
         
-        // Create content based on type
+        // Create content based on type (only text and webpage)
         let contentDiv;
-        if (highlight.type === 'image') {
-          contentDiv = document.createElement('div');
-          contentDiv.style.cssText = 'margin-bottom: 12px; padding-right: 30px;';
-          
-          const img = document.createElement('img');
-          img.src = highlight.imageUrl;
-          img.alt = highlight.imageAlt || 'Saved image';
-          img.style.cssText = 'max-width: 100%; max-height: 200px; border-radius: 8px; object-fit: cover;';
-          
-          // Add alt text if available
-          if (highlight.imageAlt) {
-            const altDiv = document.createElement('div');
-            altDiv.style.cssText = 'font-size: 14px; color: #666; margin-top: 8px; font-style: italic;';
-            altDiv.textContent = highlight.imageAlt;
-            contentDiv.appendChild(altDiv);
+        // Determine type if missing (for backward compatibility)
+        let highlightType = highlight.type;
+        if (!highlightType) {
+          if (highlight.text) {
+            highlightType = 'text';
+          } else if (highlight.webpageUrl) {
+            highlightType = 'webpage';
+          } else {
+            highlightType = 'text'; // Default
           }
-          
-          contentDiv.appendChild(img);
-        } else if (highlight.type === 'video') {
-          contentDiv = document.createElement('div');
-          contentDiv.style.cssText = 'margin-bottom: 12px; padding-right: 30px;';
-          
-          const videoContainer = document.createElement('div');
-          videoContainer.style.cssText = 'background: #f5f5f5; border-radius: 8px; padding: 16px; text-align: center;';
-          
-          const videoIcon = document.createElement('div');
-          videoIcon.innerHTML = '🎥';
-          videoIcon.style.cssText = 'font-size: 32px; margin-bottom: 8px;';
-          
-          const videoTitle = document.createElement('div');
-          videoTitle.style.cssText = 'font-size: 14px; font-weight: 600; color: #333; margin-bottom: 4px;';
-          videoTitle.textContent = highlight.videoTitle || 'Video';
-          
-          const videoUrl = document.createElement('div');
-          videoUrl.style.cssText = 'font-size: 12px; color: #666; word-break: break-all;';
-          videoUrl.textContent = highlight.videoUrl;
-          
-          videoContainer.appendChild(videoIcon);
-          videoContainer.appendChild(videoTitle);
-          videoContainer.appendChild(videoUrl);
-          contentDiv.appendChild(videoContainer);
-        } else if (highlight.type === 'audio') {
-          contentDiv = document.createElement('div');
-          contentDiv.style.cssText = 'margin-bottom: 12px; padding-right: 30px;';
-          
-          const audioContainer = document.createElement('div');
-          audioContainer.style.cssText = 'background: #f5f5f5; border-radius: 8px; padding: 16px; text-align: center;';
-          
-          const audioIcon = document.createElement('div');
-          audioIcon.innerHTML = '🎵';
-          audioIcon.style.cssText = 'font-size: 32px; margin-bottom: 8px;';
-          
-          const audioTitle = document.createElement('div');
-          audioTitle.style.cssText = 'font-size: 14px; font-weight: 600; color: #333; margin-bottom: 4px;';
-          audioTitle.textContent = highlight.audioTitle || 'Audio';
-          
-          const audioUrl = document.createElement('div');
-          audioUrl.style.cssText = 'font-size: 12px; color: #666; word-break: break-all;';
-          audioUrl.textContent = highlight.audioUrl;
-          
-          audioContainer.appendChild(audioIcon);
-          audioContainer.appendChild(audioTitle);
-          audioContainer.appendChild(audioUrl);
-          contentDiv.appendChild(audioContainer);
-        } else if (highlight.type === 'webpage') {
+        }
+        
+        // Skip non-text/webpage items
+        if (highlightType !== 'text' && highlightType !== 'webpage') {
+          return;
+        }
+        
+        if (highlightType === 'webpage') {
           contentDiv = document.createElement('div');
           contentDiv.style.cssText = 'margin-bottom: 12px; padding-right: 30px;';
           
@@ -1072,6 +1033,331 @@ Where indices are the numbers from above (0, 1, 2, etc.).`;
     container.appendChild(gridContainer);
   }
 
+  // Load Chart.js library via background script injection
+  function loadChartJS() {
+    return new Promise((resolve, reject) => {
+      // Check if already loaded
+      if (window.Chart && typeof window.Chart === 'function') {
+        console.log('Chart.js already loaded');
+        resolve(window.Chart);
+        return;
+      }
+      
+      console.log('Requesting Chart.js injection from background script...');
+      
+      // Request background script to inject Chart.js
+      chrome.runtime.sendMessage({ action: 'inject-chartjs' }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error('Error requesting Chart.js injection:', chrome.runtime.lastError);
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        
+        if (!response || !response.success) {
+          console.error('Chart.js injection failed:', response?.error);
+          reject(new Error(response?.error || 'Chart.js injection failed'));
+          return;
+        }
+        
+        console.log('Chart.js injection requested, waiting for Chart to be available...');
+        
+        // Wait for Chart to be available
+        let attempts = 0;
+        const maxAttempts = 60; // 3 seconds total (60 * 50ms)
+        const checkChart = setInterval(() => {
+          attempts++;
+          if (window.Chart && typeof window.Chart === 'function') {
+            console.log('Chart.js loaded successfully, Chart available:', typeof window.Chart);
+            clearInterval(checkChart);
+            resolve(window.Chart);
+          } else if (attempts >= maxAttempts) {
+            clearInterval(checkChart);
+            console.error('Chart.js injection completed but Chart not available after', attempts * 50, 'ms');
+            console.log('window.Chart value:', window.Chart);
+            reject(new Error('Chart.js injected but Chart not available'));
+          }
+        }, 50);
+      });
+    });
+  }
+
+  // Analyze a single saved item and generate insights (minimum 1)
+  async function analyzeItemForInsights(item) {
+    try {
+      // Check if AI is available
+      if (typeof LanguageModel === 'undefined') {
+        console.error('LanguageModel API not available');
+        return [];
+      }
+
+      const availability = await LanguageModel.availability();
+      if (availability !== 'available') {
+        console.error('LanguageModel not available');
+        return [];
+      }
+
+      // Skip if item is already analyzed
+      if (item.analyzed === true) {
+        console.log('Item already analyzed, skipping:', item.timestamp);
+        return [];
+      }
+
+      // Determine item type and prepare content
+      const itemType = item.type || (item.text ? 'text' : (item.webpageUrl ? 'webpage' : null));
+      if (itemType !== 'text' && itemType !== 'webpage') {
+        return [];
+      }
+
+      let contentToAnalyze = '';
+      let sourceContent = '';
+      
+      if (itemType === 'text') {
+        contentToAnalyze = item.text || '';
+        sourceContent = item.sourceContent || '';
+      } else {
+        // For webpages, the snippet is the title/URL, source content is the full page
+        contentToAnalyze = item.webpageTitle || item.webpageUrl || 'Webpage';
+        sourceContent = item.sourceContent || '';
+      }
+
+      if (!contentToAnalyze || contentToAnalyze.trim().length === 0) {
+        return [];
+      }
+
+      // Generate insights for this single item with source content context
+      const session = await LanguageModel.create();
+      
+      const insightPrompt = `You are a professional data analyst.
+
+You are provided with:
+
+1. contentToAnalyze: a short saved snippet or key statement
+2. sourceContent: the full text from the original webpage
+
+---
+
+### 🎯 Objective
+
+Use the **sourceContent** to **explain, expand, and contextualize** the information in **contentToAnalyze**.  
+
+The snippet is your **focus point** — treat it as a key observation or headline.  
+
+Use the source content as your **supporting data and reasoning layer**.
+
+Your task:
+- Unpack *why* the statement in the snippet matters  
+- Identify *data, causes, implications, and trends* in the source content that support or explain it  
+- Extract *numbers, comparisons, and insights* to ground the explanation in evidence
+
+---
+
+### 🧠 Analytical Behavior
+
+Think like a data analyst:
+- Derive insights primarily from the **source content**
+- Use the snippet as the "finding" to be analyzed
+- Explain patterns, trends, or factors contributing to what the snippet states
+- Highlight numeric evidence, context, and implications
+- Use short, analytical phrasing with visualization hints
+
+---
+
+contentToAnalyze: ${contentToAnalyze.substring(0, 500)}
+
+sourceContent: ${sourceContent ? sourceContent.substring(0, 3000) : 'N/A - Source content not available'}
+
+---
+
+Format your response as JSON array:
+[
+  {
+    "title": "Concise Insight Title (under 10 words)",
+    "bullets": [
+      "Detailed supporting fact or pattern [Chart Type]",
+      "Causal explanation or driver [No Chart]",
+      "Implication or outcome [No Chart]"
+    ],
+    "dataType": "trend|numeric|comparison|text",
+    "bulletData": [
+      {
+        "bulletIndex": 0,
+        "data": {
+          "labels": ["Label1", "Label2"],
+          "values": [123, 456]
+        }
+      },
+      null,
+      null
+    ],
+    "data": {
+      "labels": ["Label1", "Label2"],
+      "values": [123, 456]
+    }
+  }
+]
+
+**IMPORTANT FORMAT NOTES:**
+- "bulletData" is an array where each element corresponds to a bullet point
+- If a bullet has [Chart Type] indicator, provide its specific data object in bulletData at that index
+- If a bullet has [No Chart], use null in bulletData at that index
+- The main "data" field is optional/fallback - prefer bulletData for specific charts
+
+### 📊 Chart Creation Rules (CRITICAL)
+
+**ONLY create charts when you have VISUALIZABLE DATA:**
+- ✅ Multiple comparable values (e.g., "66.7% vs 33.3%", "2020: $100M, 2021: $150M, 2022: $200M")
+- ✅ Categories with quantities (e.g., "Individual: $392B, Corporate: $150B, Foundation: $80B")
+- ✅ Trends over time (e.g., "2019: 10%, 2020: 15%, 2021: 20%, 2022: 25%")
+- ✅ Comparisons between entities (e.g., "Jamaica: 15 storms, Cuba: 20 storms")
+- ✅ Percentages or ratios that can be compared
+
+**DO NOT create charts for:**
+- ❌ Single statements without comparative data (e.g., "Melissa is the strongest hurricane since 1851")
+- ❌ Historical claims without numerical evidence (e.g., "Record-breaking since record-keeping began")
+- ❌ Descriptive text without quantifiable metrics (e.g., "Preparing for significant impact")
+- ❌ Causal explanations without data points (e.g., "Climate change contributes to intensity")
+
+**When creating charts:**
+1. **Only use [Chart Type] indicators** when the bullet point contains **actual numerical data** that can be compared or visualized
+2. **For EACH bullet with [Chart Type]**: Extract specific data from source content and provide it in the "bulletData" array at the corresponding index
+3. **Use [No Chart]** for all explanatory, causal, or descriptive bullets without quantifiable data
+4. **Multiple charts per insight**: Each bullet with [Chart Type] should have its own chart with its own specific data
+5. **Ensure data consistency per chart**: Each chart's data object must represent the SAME type of comparison or measurement
+6. **Bar Chart**: For comparing categories (e.g., "Individual: $392B, Corporate: $150B, Foundation: $50B")
+7. **Line Chart**: For trends over time (e.g., "2020: $400B, 2021: $450B, 2022: $500B")
+8. **Pie Chart**: For showing parts of a whole where percentages sum to 100%
+9. **CRITICAL**: Each chart should visualize ONLY compatible, comparable values - each bullet's chart can show different data as long as that chart's data is internally consistent
+
+**Examples:**
+- ✅ "Individuals gave $392.45B (66.7%), corporations gave $150B (25%), foundations gave $50B (8.3%) [Bar Chart]" → Has comparable data
+- ❌ "Hurricane Melissa is projected to be the strongest since 1851 [No Chart]" → No comparable data to visualize
+- ✅ "2020: $400B, 2021: $450B, 2022: $500B, 2023: $480B [Line Chart]" → Has trend data
+- ❌ "The storm highlights vulnerability of Caribbean nations [No Chart]" → No numerical data
+
+IMPORTANT: 
+- Generate as many insights as are meaningful from the content (no limit, but typically 1-3 insights)
+- Each insight should have 3-5 bullet points
+- **CRITICAL**: Only add [Chart Type] to bullets that contain actual numerical/comparative data that can be visualized
+- If a bullet has no numerical data to visualize, use [No Chart]
+- **MULTIPLE CHARTS PER INSIGHT**: Each bullet with [Chart Type] gets its own chart - provide specific data in bulletData array
+- **bulletData array**: Must match bullets array length - provide data object for bullets with charts, null for bullets without charts
+- **Data consistency per chart**: Each chart's data must contain ONLY compatible, comparable values (same unit, same metric type)
+- Extract specific numerical data for each bullet from source content when that bullet indicates a chart
+- The main "data" field is optional fallback - prefer providing data in bulletData array
+- Focus on actionable, analytical insights
+- Each insight can be independent and cover different aspects of the content`;
+
+      const insightResponse = await session.prompt(insightPrompt, { language: 'en' });
+      session.destroy();
+
+      // Parse AI response
+      let insights = [];
+      try {
+        const jsonMatch = insightResponse.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          insights = JSON.parse(jsonMatch[0]);
+        }
+      } catch (e) {
+        console.error('Error parsing insights:', e);
+        // Fallback: create a text insight if parsing fails
+        insights = [{
+          title: contentToAnalyze.substring(0, 50) + '...',
+          bullets: [`Content extracted: ${contentToAnalyze.substring(0, 200)}... [No Chart]`],
+          dataType: 'text',
+          data: { labels: [], values: [] }
+        }];
+      }
+
+      // Ensure at least 1 insight
+      if (insights.length === 0) {
+        insights = [{
+          title: itemType === 'text' ? 'Text Saved' : 'Webpage Saved',
+          bullets: [
+            itemType === 'text' 
+              ? `Saved text content: ${contentToAnalyze.substring(0, 150)}... [No Chart]`
+              : `Saved webpage: ${item.webpageTitle || item.webpageUrl} [No Chart]`
+          ],
+          dataType: 'text',
+          data: { labels: [], values: [] }
+        }];
+      }
+      
+      // Ensure all insights have bullets array
+      insights = insights.map(insight => {
+        if (!insight.bullets) {
+          if (insight.description) {
+            insight.bullets = [insight.description + ' [No Chart]'];
+            delete insight.description;
+          } else {
+            insight.bullets = ['Insight extracted from saved content [No Chart]'];
+          }
+        }
+        return insight;
+      });
+
+      // Add metadata to each insight
+      const insightsWithMetadata = insights.map(insight => ({
+        ...insight,
+        itemId: item.timestamp,
+        itemType: itemType,
+        sourceUrl: item.url || item.webpageUrl,
+        createdAt: new Date().toISOString()
+      }));
+
+      return insightsWithMetadata;
+    } catch (error) {
+      console.error('Error analyzing item for insights:', error);
+      return [];
+    }
+  }
+
+  // Save insights to local storage (with deduplication)
+  async function saveInsights(insights) {
+    return new Promise((resolve) => {
+      chrome.storage.local.get('prismInsights', (result) => {
+        const existingInsights = result.prismInsights || [];
+        
+        // If we have insights to save, get their itemId(s)
+        const itemIds = new Set(insights.map(insight => insight.itemId).filter(Boolean));
+        
+        // Remove ALL existing insights for the same itemId(s) to prevent duplicates with different titles
+        const filteredExisting = existingInsights.filter(insight => {
+          return !itemIds.has(insight.itemId);
+        });
+        
+        // Also filter out any duplicates from new insights (same itemId + title)
+        const existingKeys = new Set(
+          filteredExisting.map(insight => `${insight.itemId || ''}-${insight.title || ''}`)
+        );
+        
+        const newInsights = insights.filter(insight => {
+          const key = `${insight.itemId || ''}-${insight.title || ''}`;
+          return !existingKeys.has(key);
+        });
+        
+        // Combine filtered existing insights with new ones
+        const updatedInsights = [...filteredExisting, ...newInsights];
+        chrome.storage.local.set({ prismInsights: updatedInsights }, () => {
+          resolve(updatedInsights);
+        });
+      });
+    });
+  }
+
+  // Mark item as analyzed
+  async function markItemAsAnalyzed(itemTimestamp) {
+    chrome.storage.local.get('highlights', (result) => {
+      const highlights = result.highlights || [];
+      const updatedHighlights = highlights.map(h => {
+        if (h.timestamp === itemTimestamp) {
+          return { ...h, analyzed: true };
+        }
+        return h;
+      });
+      chrome.storage.local.set({ highlights: updatedHighlights });
+    });
+  }
+
   function generateInsights(highlights) {
     const insights = [];
     
@@ -1171,72 +1457,675 @@ Where indices are the numbers from above (0, 1, 2, etc.).`;
     return insights;
   }
 
-  function loadInsights() {
+  // Create Chart.js visualization
+  function createChart(canvas, chartType, data, description) {
+    const Chart = window.Chart;
+    if (!Chart) return null;
+
+    const colors = [
+      'rgba(102, 126, 234, 0.8)',
+      'rgba(255, 99, 132, 0.8)',
+      'rgba(54, 162, 235, 0.8)',
+      'rgba(255, 206, 86, 0.8)',
+      'rgba(75, 192, 192, 0.8)',
+      'rgba(153, 102, 255, 0.8)',
+      'rgba(255, 159, 64, 0.8)'
+    ];
+
+    const chartData = {
+      labels: data.labels || [],
+      datasets: [{
+        label: description || 'Data',
+        data: data.values || [],
+        backgroundColor: colors.slice(0, data.labels?.length || 0),
+        borderColor: colors.slice(0, data.labels?.length || 0),
+        borderWidth: 2
+      }]
+    };
+
+    const config = {
+      type: chartType,
+      data: chartData,
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: {
+              font: {
+                size: 11,
+                family: '-apple-system, BlinkMacSystemFont, sans-serif'
+              }
+            }
+          },
+          tooltip: {
+            enabled: true
+          }
+        }
+      }
+    };
+
+    return new Chart(canvas, config);
+  }
+
+  // Share visualization
+  function shareVisualization(insight) {
+    const bullets = insight.bullets || [];
+    const bulletsText = bullets.map(b => {
+      const cleanText = b.replace(/\s*\[[^\]]+\]\s*$/, '').trim();
+      const chartMatch = b.match(/\[([^\]]+)\]/);
+      const chartType = chartMatch ? chartMatch[1] : null;
+      return `• ${cleanText}${chartType && chartType !== 'No Chart' ? ` [${chartType}]` : ''}`;
+    }).join('\n');
+
+    if (navigator.share) {
+      navigator.share({
+        title: `Prism Insight: ${insight.title}`,
+        text: `${insight.title}\n\n${bulletsText}`,
+        url: window.location.href
+      }).catch(err => console.log('Error sharing:', err));
+    } else {
+      // Fallback: Copy to clipboard
+      const text = `${insight.title}\n\n${bulletsText}`;
+      navigator.clipboard.writeText(text).then(() => {
+        alert('Insight copied to clipboard!');
+      });
+    }
+  }
+
+  // Delete an insight
+  async function deleteInsight(insight, insightCard) {
+    if (!confirm('Delete this insight?')) {
+      return;
+    }
+    
+    try {
+      chrome.storage.local.get('prismInsights', (result) => {
+        const insights = result.prismInsights || [];
+        // More precise matching using multiple fields
+        const updatedInsights = insights.filter(i => {
+          // Match by itemId, title, and createdAt for precise identification
+          const isMatch = i.itemId === insight.itemId && 
+                         i.title === insight.title && 
+                         i.createdAt === insight.createdAt;
+          return !isMatch;
+        });
+        
+        chrome.storage.local.set({ prismInsights: updatedInsights }, () => {
+          // Remove card from UI with animation
+          insightCard.style.transition = 'opacity 0.3s, transform 0.3s';
+          insightCard.style.opacity = '0';
+          insightCard.style.transform = 'translateX(-20px)';
+          setTimeout(() => {
+            insightCard.remove();
+            // Check if container is empty and show empty state
+            const container = document.getElementById('prism-highlights-container');
+            if (container && container.children.length === 0) {
+              container.innerHTML = '';
+              const emptyState = document.createElement('div');
+              emptyState.textContent = 'No insights yet. Save some text or webpages to generate insights!';
+              emptyState.style.cssText = 'text-align: center; padding: 40px 20px; color: #999; font-size: 14px;';
+              container.appendChild(emptyState);
+            }
+          }, 300);
+        });
+      });
+    } catch (error) {
+      console.error('Error deleting insight:', error);
+      alert('Failed to delete insight. Please try again.');
+    }
+  }
+
+  // Refresh/regenerate an insight
+  async function refreshInsight(insight, insightCard) {
+    if (!insight.itemId) {
+      alert('Cannot refresh: No source item found.');
+      return;
+    }
+    
+    try {
+      // Show loading state
+      const originalContent = insightCard.innerHTML;
+      insightCard.style.opacity = '0.6';
+      insightCard.style.pointerEvents = 'none';
+      const loadingIndicator = document.createElement('div');
+      loadingIndicator.textContent = 'Refreshing insight...';
+      loadingIndicator.style.cssText = 'text-align: center; padding: 20px; color: #666; font-size: 13px;';
+      insightCard.innerHTML = '';
+      insightCard.appendChild(loadingIndicator);
+      
+      // Get the source item from storage
+      chrome.storage.local.get('highlights', async (result) => {
+        const highlights = result.highlights || [];
+        const sourceItem = highlights.find(h => h.timestamp === insight.itemId);
+        
+        if (!sourceItem) {
+          alert('Cannot refresh: Source item not found.');
+          insightCard.innerHTML = originalContent;
+          insightCard.style.opacity = '1';
+          insightCard.style.pointerEvents = 'auto';
+          return;
+        }
+        
+        // Remove only this specific insight, not all insights for the item
+        chrome.storage.local.get('prismInsights', async (insightsResult) => {
+          const existingInsights = insightsResult.prismInsights || [];
+          // Remove only the specific insight being refreshed
+          const filteredInsights = existingInsights.filter(i => 
+            !(i.itemId === insight.itemId && i.title === insight.title && i.createdAt === insight.createdAt)
+          );
+          
+          // Temporarily remove this specific insight from storage
+          chrome.storage.local.set({ prismInsights: filteredInsights });
+          
+          // Re-analyze the item (this will generate new insights)
+          const updatedItem = { ...sourceItem, analyzed: false };
+          const newInsights = await analyzeItemForInsights(updatedItem);
+          
+          if (newInsights.length > 0) {
+            // Save new insights (will replace the old one)
+            await saveInsights(newInsights);
+            
+            // Mark item as analyzed again
+            await markItemAsAnalyzed(insight.itemId);
+            
+            // Reload insights view
+            loadInsights();
+          } else {
+            alert('Failed to regenerate insight. Please try again.');
+            // Restore original content
+            insightCard.innerHTML = originalContent;
+            insightCard.style.opacity = '1';
+            insightCard.style.pointerEvents = 'auto';
+            
+            // Restore old insights if regeneration failed
+            chrome.storage.local.set({ prismInsights: existingInsights });
+          }
+        });
+      });
+    } catch (error) {
+      console.error('Error refreshing insight:', error);
+      alert('Failed to refresh insight. Please try again.');
+      insightCard.style.opacity = '1';
+      insightCard.style.pointerEvents = 'auto';
+    }
+  }
+
+  async function loadInsights() {
     if (!overlay || !isVisible) return;
     
     const container = document.getElementById('prism-highlights-container');
     if (!container) return;
     
-    chrome.storage.local.get('highlights', (result) => {
-      const highlights = result.highlights || [];
+    // Load saved insights from storage
+    chrome.storage.local.get('prismInsights', async (insightsResult) => {
+      let insights = insightsResult.prismInsights || [];
+      
+      // Deduplicate: For each itemId, keep only the most recent insights
+      // Group by itemId
+      const insightsByItemId = new Map();
+      insights.forEach(insight => {
+        const itemId = insight.itemId || 'unknown';
+        if (!insightsByItemId.has(itemId)) {
+          insightsByItemId.set(itemId, []);
+        }
+        insightsByItemId.get(itemId).push(insight);
+      });
+      
+      // For each itemId, keep only the most recent insight (by createdAt or keep all if from same batch)
+      // Actually, if multiple insights exist for same itemId, they're likely duplicates from different processing
+      // Keep only the most recently created ones (limit to 1 per itemId)
+      const deduplicatedInsights = [];
+      insightsByItemId.forEach((itemInsights, itemId) => {
+        // Sort by createdAt (most recent first)
+        itemInsights.sort((a, b) => {
+          const dateA = new Date(a.createdAt || 0);
+          const dateB = new Date(b.createdAt || 0);
+          return dateB - dateA;
+        });
+        // Keep only the most recent insight for this itemId
+        deduplicatedInsights.push(itemInsights[0]);
+        
+        // If there are more insights with different titles, they're duplicates - log for debugging
+        if (itemInsights.length > 1) {
+          console.log(`Removing ${itemInsights.length - 1} duplicate insight(s) for itemId: ${itemId}`);
+        }
+      });
+      
+      // Also remove exact duplicates (same itemId + title)
+      const seen = new Map();
+      const finalInsights = deduplicatedInsights.filter(insight => {
+        const key = `${insight.itemId || ''}-${insight.title || ''}`;
+        if (seen.has(key)) {
+          return false;
+        }
+        seen.set(key, true);
+        return true;
+      });
+      
+      insights = finalInsights;
+      
+      // Convert old format insights (with description) to new format (with bullets)
+      let needsUpdate = false;
+      insights = insights.map(insight => {
+        // Check if this is an old format insight
+        if (insight.description && (!insight.bullets || insight.bullets.length === 0)) {
+          // Convert old format to new format
+          // For old insights, convert description to a single bullet point
+          console.log('Converting old insight format to bullets:', insight.title);
+          insight.bullets = [insight.description + ' [No Chart]'];
+          delete insight.description;
+          needsUpdate = true;
+        } else if (!insight.bullets || insight.bullets.length === 0) {
+          // No bullets and no description - create default
+          console.log('Creating default bullets for insight:', insight.title);
+          insight.bullets = ['Insight extracted from saved content [No Chart]'];
+          needsUpdate = true;
+        }
+        // Make sure description is deleted even if bullets exist
+        if (insight.description) {
+          delete insight.description;
+          needsUpdate = true;
+        }
+        return insight;
+      });
+      
+      // Save converted insights back to storage if conversion happened
+      if (needsUpdate || insights.length !== (insightsResult.prismInsights || []).length) {
+        console.log('Saving converted insights back to storage, needsUpdate:', needsUpdate);
+        chrome.storage.local.set({ prismInsights: insights }, () => {
+          // After saving, if we converted, reload to ensure fresh display
+          if (needsUpdate) {
+            console.log('Insights converted, reloading display...');
+          }
+        });
+      }
       
       container.innerHTML = '';
       
-      if (highlights.length === 0) {
-        const newEmptyState = document.createElement('div');
-        newEmptyState.textContent = 'No insights yet';
-        newEmptyState.style.cssText = 'text-align: center; padding: 40px 20px; color: #999; font-size: 14px;';
-        container.appendChild(newEmptyState);
-        return;
-      }
-
-      const insights = generateInsights(highlights);
-      
       if (insights.length === 0) {
         const newEmptyState = document.createElement('div');
-        newEmptyState.textContent = 'No insights available';
+        newEmptyState.textContent = 'No insights yet. Save some text or webpages to generate insights!';
         newEmptyState.style.cssText = 'text-align: center; padding: 40px 20px; color: #999; font-size: 14px;';
         container.appendChild(newEmptyState);
         return;
       }
 
-      insights.forEach(insight => {
+      // Load Chart.js for visualizations
+      let ChartAvailable = false;
+      try {
+        await loadChartJS();
+        ChartAvailable = !!window.Chart;
+        console.log('Chart.js loaded:', ChartAvailable);
+        if (!ChartAvailable) {
+          console.warn('Chart.js script loaded but Chart is not available');
+        }
+      } catch (error) {
+        console.error('Failed to load Chart.js:', error);
+        ChartAvailable = false;
+        // Continue without charts
+      }
+
+      // Render each insight (sorted by newest first)
+      const sortedInsights = insights.sort((a, b) => 
+        new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
+      );
+
+      sortedInsights.forEach((insight, index) => {
         const insightCard = document.createElement('div');
         insightCard.style.cssText = `
           background: white;
           border: 1px solid #e0e0e0;
           border-radius: 16px;
-          padding: 16px;
+          padding: 14px;
           margin-bottom: 12px;
-          border-left: 4px solid #667eea;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         `;
         
+        // Title
         const titleDiv = document.createElement('div');
-        titleDiv.style.cssText = 'font-size: 14px; font-weight: 600; color: #333; margin-bottom: 8px; font-family: -apple-system, BlinkMacSystemFont, sans-serif;';
+        titleDiv.style.cssText = 'font-size: 15px; font-weight: 600; color: #333; margin-bottom: 8px; font-family: -apple-system, BlinkMacSystemFont, sans-serif;';
         titleDiv.textContent = insight.title;
         
-        const textDiv = document.createElement('div');
-        textDiv.style.cssText = 'font-size: 15px; line-height: 1.6; color: #555; font-family: Georgia, Times, serif;';
-        textDiv.textContent = insight.text;
+        // Bullet points
+        const bulletsDiv = document.createElement('div');
+        bulletsDiv.style.cssText = 'font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px; font-family: -apple-system, BlinkMacSystemFont, sans-serif;';
+        
+        let bullets = insight.bullets || [];
+        
+        // Convert description to bullets if it exists (shouldn't happen after conversion, but just in case)
+        if (bullets.length === 0 && insight.description) {
+          console.log('Fallback: Converting description to bullets for display');
+          bullets = [insight.description + ' [No Chart]'];
+          // Also update the insight object and save
+          insight.bullets = bullets;
+          delete insight.description;
+          // Save the updated insight
+          chrome.storage.local.get('prismInsights', (result) => {
+            const allInsights = result.prismInsights || [];
+            const updatedInsights = allInsights.map(i => 
+              i.itemId === insight.itemId && i.title === insight.title ? insight : i
+            );
+            chrome.storage.local.set({ prismInsights: updatedInsights });
+          });
+        }
+        
+        // If still empty, show a default message
+        if (bullets.length === 0) {
+          bullets = ['Insight content available [No Chart]'];
+        }
+        
+        const bulletCharts = []; // Track bullets that need charts
+        
+        bullets.forEach((bullet, bulletIndex) => {
+          const bulletItem = document.createElement('div');
+          bulletItem.style.cssText = 'margin-bottom: 6px; padding-left: 8px; position: relative;';
+          
+          // Extract chart type from brackets
+          const chartMatch = bullet.match(/\[([^\]]+)\]/);
+          const chartType = chartMatch ? chartMatch[1] : null;
+          const bulletText = bullet.replace(/\s*\[[^\]]+\]\s*$/, '').trim();
+          
+          // Bullet point marker
+          const marker = document.createElement('span');
+          marker.style.cssText = 'position: absolute; left: 0; color: #667eea;';
+          marker.textContent = '•';
+          
+          // Bullet text
+          const textSpan = document.createElement('span');
+          textSpan.textContent = bulletText;
+          
+          // Chart type indicator
+          if (chartType && chartType !== 'No Chart') {
+            const chartIndicator = document.createElement('span');
+            chartIndicator.style.cssText = 'color: #999; font-size: 11px; margin-left: 6px; font-style: italic;';
+            chartIndicator.textContent = `[${chartType}]`;
+            bulletItem.appendChild(marker);
+            bulletItem.appendChild(textSpan);
+            bulletItem.appendChild(chartIndicator);
+            
+            // Track this bullet for chart creation
+            bulletCharts.push({
+              bulletIndex: bulletIndex,
+              chartType: chartType,
+              bulletText: bulletText
+            });
+          } else {
+            bulletItem.appendChild(marker);
+            bulletItem.appendChild(textSpan);
+          }
+          
+          bulletsDiv.appendChild(bulletItem);
+        });
+        
+        // Source URL (if available)
+        if (insight.sourceUrl) {
+          const sourceDiv = document.createElement('div');
+          sourceDiv.style.cssText = 'font-size: 11px; color: #999; margin-bottom: 10px; font-family: -apple-system, BlinkMacSystemFont, sans-serif;';
+          const sourceLink = document.createElement('a');
+          sourceLink.href = insight.sourceUrl;
+          sourceLink.target = '_blank';
+          sourceLink.style.cssText = 'color: #999; text-decoration: none;';
+          try {
+            const url = new URL(insight.sourceUrl);
+            sourceLink.textContent = url.hostname.replace('www.', '');
+          } catch (e) {
+            sourceLink.textContent = insight.sourceUrl.substring(0, 30) + '...';
+          }
+          sourceDiv.appendChild(sourceLink);
+          insightCard.appendChild(sourceDiv);
+        }
+        
+        // Determine if we have base data available
+        const hasValidData = insight.data && 
+                            insight.data.labels && 
+                            insight.data.values && 
+                            Array.isArray(insight.data.labels) && 
+                            Array.isArray(insight.data.values) &&
+                            insight.data.labels.length > 0 && 
+                            insight.data.values.length > 0;
+        
+        // Create a chart for each bullet that indicates a chart type
+        bulletCharts.forEach((chartInfo, chartIndex) => {
+          // Only create chart if we have Chart.js available
+          if (!ChartAvailable) {
+            return;
+          }
+          
+          // Get data for this specific bullet from bulletData array, or fallback to insight.data
+          let chartData = null;
+          
+          // Check if insight has bulletData array
+          if (insight.bulletData && Array.isArray(insight.bulletData)) {
+            const bulletDataEntry = insight.bulletData[chartInfo.bulletIndex];
+            if (bulletDataEntry && bulletDataEntry.data) {
+              chartData = bulletDataEntry.data;
+            }
+          }
+          
+          // Fallback to main insight.data if bulletData not available
+          if (!chartData && hasValidData) {
+            chartData = insight.data;
+          }
+          
+          // Validate chart data
+          if (!chartData || !chartData.labels || !chartData.values ||
+              !Array.isArray(chartData.labels) || !Array.isArray(chartData.values) ||
+              chartData.labels.length < 2 || chartData.values.length < 2) {
+            console.log(`Skipping chart ${chartIndex} - insufficient data for bullet:`, chartInfo.bulletText);
+            return;
+          }
+          
+          const chartContainer = document.createElement('div');
+          chartContainer.id = `chart-container-${index}-${chartIndex}`;
+          chartContainer.style.cssText = 'position: relative; height: 200px; margin-bottom: 12px; margin-top: 8px; width: 100%; display: none;';
+          
+          const canvas = document.createElement('canvas');
+          canvas.id = `chart-${index}-${chartIndex}`;
+          canvas.style.cssText = 'max-width: 100%; height: 200px;';
+          chartContainer.appendChild(canvas);
+          
+          // Convert chart type names (e.g., "Bar Chart" -> "bar")
+          const chartTypeMap = {
+            'Bar Chart': 'bar',
+            'Pie Chart': 'pie',
+            'Line Chart': 'line',
+            'Doughnut Chart': 'doughnut',
+            'Polar Area': 'polarArea',
+            'Radar Chart': 'radar'
+          };
+          let chartType = chartTypeMap[chartInfo.chartType] || chartInfo.chartType.toLowerCase().replace(' chart', '') || 'bar';
+          
+          // Create chart after DOM is ready and Chart.js is loaded
+          setTimeout(() => {
+            if (!window.Chart) {
+              console.error('Chart.js not available when creating chart');
+              chartContainer.innerHTML = '<div style="text-align: center; padding: 20px; color: #999; font-size: 12px;">Chart library not loaded</div>';
+              return;
+            }
+            
+            try {
+              const chartLabel = chartInfo.bulletText.substring(0, 50) + (chartInfo.bulletText.length > 50 ? '...' : '');
+              
+              console.log(`Creating chart ${chartIndex} for bullet:`, { 
+                bulletIndex: chartInfo.bulletIndex,
+                bulletText: chartInfo.bulletText, 
+                chartType, 
+                data: chartData, 
+                label: chartLabel 
+              });
+              const chartInstance = createChart(canvas, chartType, chartData, chartLabel);
+              if (!chartInstance) {
+                console.error(`Failed to create chart ${chartIndex}`);
+                chartContainer.innerHTML = '<div style="text-align: center; padding: 20px; color: #999; font-size: 12px;">Failed to create chart</div>';
+                chartContainer.style.display = 'none';
+              } else {
+                console.log(`Chart ${chartIndex} created successfully`);
+                chartContainer.style.display = 'block';
+              }
+            } catch (error) {
+              console.error(`Error creating chart ${chartIndex}:`, error);
+              chartContainer.innerHTML = '<div style="text-align: center; padding: 20px; color: #999; font-size: 12px;">Chart creation error</div>';
+              chartContainer.style.display = 'none';
+            }
+          }, 200 + (chartIndex * 100)); // Stagger chart creation
+          
+          insightCard.appendChild(chartContainer);
+        });
+        
+        // Button container
+        const buttonContainer = document.createElement('div');
+        buttonContainer.style.cssText = 'display: flex; gap: 8px; margin-top: 8px;';
+        
+        // Share button
+        const shareBtn = document.createElement('button');
+        shareBtn.innerHTML = '📤 Share';
+        shareBtn.style.cssText = `
+          background: #667eea;
+          color: white;
+          border: none;
+          border-radius: 6px;
+          padding: 6px 12px;
+          font-size: 11px;
+          font-weight: 500;
+          cursor: pointer;
+          font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+          transition: background 0.2s;
+          flex: 1;
+        `;
+        shareBtn.onmouseover = () => shareBtn.style.background = '#5568d3';
+        shareBtn.onmouseout = () => shareBtn.style.background = '#667eea';
+        shareBtn.addEventListener('click', () => shareVisualization(insight));
+        
+        // Refresh button
+        const refreshBtn = document.createElement('button');
+        refreshBtn.innerHTML = '🔄 Refresh';
+        refreshBtn.style.cssText = `
+          background: #10b981;
+          color: white;
+          border: none;
+          border-radius: 6px;
+          padding: 6px 12px;
+          font-size: 11px;
+          font-weight: 500;
+          cursor: pointer;
+          font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+          transition: background 0.2s;
+          flex: 1;
+        `;
+        refreshBtn.onmouseover = () => refreshBtn.style.background = '#059669';
+        refreshBtn.onmouseout = () => refreshBtn.style.background = '#10b981';
+        refreshBtn.addEventListener('click', () => refreshInsight(insight, insightCard));
+        
+        // Delete button
+        const deleteBtn = document.createElement('button');
+        deleteBtn.innerHTML = '🗑️ Delete';
+        deleteBtn.style.cssText = `
+          background: #ef4444;
+          color: white;
+          border: none;
+          border-radius: 6px;
+          padding: 6px 12px;
+          font-size: 11px;
+          font-weight: 500;
+          cursor: pointer;
+          font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+          transition: background 0.2s;
+          flex: 1;
+        `;
+        deleteBtn.onmouseover = () => deleteBtn.style.background = '#dc2626';
+        deleteBtn.onmouseout = () => deleteBtn.style.background = '#ef4444';
+        deleteBtn.addEventListener('click', () => deleteInsight(insight, insightCard));
         
         insightCard.appendChild(titleDiv);
-        insightCard.appendChild(textDiv);
+        insightCard.appendChild(bulletsDiv);
+        // Source URL was already added above if available
+        // Chart container is appended above if shouldShowChart is true
+        buttonContainer.appendChild(shareBtn);
+        buttonContainer.appendChild(refreshBtn);
+        buttonContainer.appendChild(deleteBtn);
+        insightCard.appendChild(buttonContainer);
         container.appendChild(insightCard);
       });
+
     });
+  }
+
+  // Track items currently being processed to prevent duplicates
+  const processingItems = new Set();
+  
+  // Process new item when it's saved
+  async function processNewItemForInsights(newItem) {
+    // Prevent duplicate processing
+    if (processingItems.has(newItem.timestamp)) {
+      console.log('Item already being processed, skipping:', newItem.timestamp);
+      return;
+    }
+    
+    // Skip if already analyzed
+    if (newItem.analyzed === true) {
+      console.log('Item already analyzed, skipping:', newItem.timestamp);
+      return;
+    }
+    
+    try {
+      processingItems.add(newItem.timestamp);
+      console.log('Processing new item for insights:', newItem.timestamp);
+      
+      // Analyze the item for insights
+      const insights = await analyzeItemForInsights(newItem);
+      
+      if (insights.length > 0) {
+        // Save insights to storage (with deduplication)
+        await saveInsights(insights);
+        
+        // Mark item as analyzed
+        await markItemAsAnalyzed(newItem.timestamp);
+        
+        console.log(`Generated ${insights.length} insight(s) for item:`, newItem.timestamp);
+        
+        // Refresh insights view if currently visible
+        if (currentView === 'insights' && isVisible) {
+          loadInsights();
+        }
+      }
+    } catch (error) {
+      console.error('Error processing new item for insights:', error);
+    } finally {
+      // Remove from processing set
+      processingItems.delete(newItem.timestamp);
+    }
+  }
+
+  async function checkAIAvailability() {
+    if (typeof LanguageModel === 'undefined') {
+      return { available: false, message: 'LanguageModel API not available. Please ensure you\'re using Chrome 138+ with Prompt API enabled.' };
+    }
+    
+    try {
+      const availability = await LanguageModel.availability();
+      if (availability !== 'available') {
+        return { 
+          available: false, 
+          message: 'LanguageModel not available. Please enable Prompt API in chrome://flags or check chrome://on-device-internals for requirements.' 
+        };
+      }
+      return { available: true, message: null };
+    } catch (error) {
+      return { available: false, message: `Error checking AI availability: ${error.message}` };
+    }
   }
 
   function switchView(view) {
     currentView = view;
     
     const savedBtn = overlay.querySelector('.toggle-btn.saved');
-    const groupsBtn = overlay.querySelector('.toggle-btn.groups');
     const insightsBtn = overlay.querySelector('.toggle-btn.insights');
     const container = document.getElementById('prism-highlights-container');
     
     // Reset all buttons to inactive style
     savedBtn.style.cssText = 'flex: 1; padding: 8px 12px; border: none; border-radius: 16px; background: transparent; cursor: pointer; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 13px; font-weight: 500; color: #666; transition: all 0.2s;';
-    groupsBtn.style.cssText = 'flex: 1; padding: 8px 12px; border: none; border-radius: 16px; background: transparent; cursor: pointer; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 13px; font-weight: 500; color: #666; transition: all 0.2s;';
     insightsBtn.style.cssText = 'flex: 1; padding: 8px 12px; border: none; border-radius: 16px; background: transparent; cursor: pointer; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 13px; font-weight: 500; color: #666; transition: all 0.2s;';
     
     // Activate the selected view
@@ -1244,11 +2133,9 @@ Where indices are the numbers from above (0, 1, 2, etc.).`;
       savedBtn.style.cssText = 'flex: 1; padding: 8px 12px; border: none; border-radius: 16px; background: white; cursor: pointer; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 13px; font-weight: 600; color: #333; box-shadow: 0 1px 2px rgba(0,0,0,0.1); transition: all 0.2s;';
       container.innerHTML = '';
       loadHighlights();
-    } else if (view === 'groups') {
-      groupsBtn.style.cssText = 'flex: 1; padding: 8px 12px; border: none; border-radius: 16px; background: white; cursor: pointer; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 13px; font-weight: 600; color: #333; box-shadow: 0 1px 2px rgba(0,0,0,0.1); transition: all 0.2s;';
-      loadGroups(false); // Don't force regeneration when switching tabs
     } else {
       insightsBtn.style.cssText = 'flex: 1; padding: 8px 12px; border: none; border-radius: 16px; background: white; cursor: pointer; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 13px; font-weight: 600; color: #333; box-shadow: 0 1px 2px rgba(0,0,0,0.1); transition: all 0.2s;';
+      // AI availability is now checked inside loadInsights with better error handling
       loadInsights();
     }
   }
@@ -1476,16 +2363,36 @@ Respond with either "KEEP_CURRENT_TITLE" or a new title (under 15 words).`;
               if (isVisible) {
                 if (currentView === 'saved') {
                   loadHighlights();
-                } else if (currentView === 'groups' && cachedGroups) {
-                  // Update groups dynamically when items are added/removed
-                  updateGroupsDynamically(oldHighlights, newHighlights);
+                } else if (currentView === 'insights') {
+                  loadInsights();
                 }
               }
               
-              // Auto-analyze and assign new items to groups
+              // Analyze new items for insights
               if (newHighlights.length > oldHighlights.length) {
                 const newItem = newHighlights[newHighlights.length - 1]; // Last item is the new one
-                autoAnalyzeAndAssignNewItem(newItem);
+                processNewItemForInsights(newItem);
+              }
+              
+              // Handle item deletion - remove associated insights
+              if (newHighlights.length < oldHighlights.length) {
+                const deletedItems = oldHighlights.filter(old => 
+                  !newHighlights.find(newH => newH.timestamp === old.timestamp)
+                );
+                
+                deletedItems.forEach(deletedItem => {
+                  chrome.storage.local.get('prismInsights', (result) => {
+                    const insights = (result.prismInsights || []).filter(
+                      insight => insight.itemId !== deletedItem.timestamp
+                    );
+                    chrome.storage.local.set({ prismInsights: insights });
+                    
+                    // Refresh insights view if visible
+                    if (currentView === 'insights' && isVisible) {
+                      loadInsights();
+                    }
+                  });
+                });
               }
             }
           });

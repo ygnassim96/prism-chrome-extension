@@ -1,6 +1,13 @@
 (function() {
   'use strict';
 
+  // Prevent duplicate initialization if script is injected multiple times
+  if (window.prismContentInitialized) {
+    console.log('Prism content script already initialized, skipping...');
+    return;
+  }
+  window.prismContentInitialized = true;
+
   console.log('Prism: Content script loaded');
 
   // Wait for body to be available
@@ -26,11 +33,50 @@
     }, 2000);
   }
 
+  // Extract main content from page
+  function extractPageContent() {
+    try {
+      // Try to find main article content
+      const article = document.querySelector('article') || 
+                      document.querySelector('[role="article"]') ||
+                      document.querySelector('main') ||
+                      document.querySelector('.article') ||
+                      document.querySelector('.content') ||
+                      document.body;
+      
+      // Clone to avoid modifying DOM
+      const clone = article.cloneNode(true);
+      
+      // Remove unwanted elements
+      clone.querySelectorAll('script, style, nav, aside, footer, header, .ad, .advertisement, .sidebar, .social-share, .comments, noscript').forEach(el => el.remove());
+      
+      // Get text content and clean up
+      let text = clone.innerText || clone.textContent || '';
+      
+      // Clean up excessive whitespace
+      text = text.replace(/\s+/g, ' ').trim();
+      
+      // Limit to reasonable size (5000 chars should be enough for context)
+      if (text.length > 5000) {
+        text = text.substring(0, 5000) + '...';
+      }
+      
+      return text;
+    } catch (e) {
+      console.error('Error extracting page content:', e);
+      return '';
+    }
+  }
+
   async function saveHighlight(text) {
+    // Extract full page content for context
+    const sourceContent = extractPageContent();
+    
     // Get current page info
     const pageData = {
       type: 'text',
       text: text,
+      sourceContent: sourceContent,
       url: window.location.href,
       title: document.title,
       timestamp: new Date().toISOString()
@@ -47,78 +93,16 @@
     showSuccessNotification();
   }
 
-  async function saveImage(imageUrl, imageAlt, pageUrl, pageTitle) {
-    // Get current page info
-    const pageData = {
-      type: 'image',
-      imageUrl: imageUrl,
-      imageAlt: imageAlt || '',
-      url: pageUrl || window.location.href,
-      title: pageTitle || document.title,
-      timestamp: new Date().toISOString()
-    };
-
-    // Save to chrome storage
-    chrome.storage.local.get('highlights', (result) => {
-      const highlights = result.highlights || [];
-      highlights.push(pageData);
-      chrome.storage.local.set({ highlights: highlights });
-    });
-
-    // Show success notification
-    showSuccessNotification();
-  }
-
-  async function saveVideo(videoUrl, videoTitle, pageUrl, pageTitle) {
-    // Get current page info
-    const pageData = {
-      type: 'video',
-      videoUrl: videoUrl,
-      videoTitle: videoTitle || '',
-      url: pageUrl || window.location.href,
-      title: pageTitle || document.title,
-      timestamp: new Date().toISOString()
-    };
-
-    // Save to chrome storage
-    chrome.storage.local.get('highlights', (result) => {
-      const highlights = result.highlights || [];
-      highlights.push(pageData);
-      chrome.storage.local.set({ highlights: highlights });
-    });
-
-    // Show success notification
-    showSuccessNotification();
-  }
-
-  async function saveAudio(audioUrl, audioTitle, pageUrl, pageTitle) {
-    // Get current page info
-    const pageData = {
-      type: 'audio',
-      audioUrl: audioUrl,
-      audioTitle: audioTitle || '',
-      url: pageUrl || window.location.href,
-      title: pageTitle || document.title,
-      timestamp: new Date().toISOString()
-    };
-
-    // Save to chrome storage
-    chrome.storage.local.get('highlights', (result) => {
-      const highlights = result.highlights || [];
-      highlights.push(pageData);
-      chrome.storage.local.set({ highlights: highlights });
-    });
-
-    // Show success notification
-    showSuccessNotification();
-  }
-
   async function saveWebpage(webpageUrl, webpageTitle, pageUrl, pageTitle) {
+    // Extract full page content
+    const sourceContent = extractPageContent();
+    
     // Get current page info
     const pageData = {
       type: 'webpage',
       webpageUrl: webpageUrl,
       webpageTitle: webpageTitle || '',
+      sourceContent: sourceContent,
       url: pageUrl || window.location.href,
       title: pageTitle || document.title,
       timestamp: new Date().toISOString()
@@ -147,33 +131,6 @@
         sendResponse({ success: true });
       } else {
         sendResponse({ success: false, error: 'No text selected' });
-      }
-    } else if (request.action === 'save-image') {
-      const { imageUrl, imageAlt, pageUrl, pageTitle } = request;
-      
-      if (imageUrl) {
-        saveImage(imageUrl, imageAlt, pageUrl, pageTitle);
-        sendResponse({ success: true });
-      } else {
-        sendResponse({ success: false, error: 'No image URL provided' });
-      }
-    } else if (request.action === 'save-video') {
-      const { videoUrl, videoTitle, pageUrl, pageTitle } = request;
-      
-      if (videoUrl) {
-        saveVideo(videoUrl, videoTitle, pageUrl, pageTitle);
-        sendResponse({ success: true });
-      } else {
-        sendResponse({ success: false, error: 'No video URL provided' });
-      }
-    } else if (request.action === 'save-audio') {
-      const { audioUrl, audioTitle, pageUrl, pageTitle } = request;
-      
-      if (audioUrl) {
-        saveAudio(audioUrl, audioTitle, pageUrl, pageTitle);
-        sendResponse({ success: true });
-      } else {
-        sendResponse({ success: false, error: 'No audio URL provided' });
       }
     } else if (request.action === 'save-webpage') {
       const { webpageUrl, webpageTitle, pageUrl, pageTitle } = request;
